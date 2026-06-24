@@ -703,6 +703,77 @@ done
 
 ---
 
+### Troubleshooting: Gitleaks Did Not Flag a Secret
+
+If you commit a file with what looks like a secret (e.g. `my_password=ramesh123`) and Gitleaks passes without failing, this is usually expected behavior — not a broken setup.
+
+#### Why it happens
+
+Gitleaks ships with **170+ built-in rules** tuned for specific, high-entropy secret patterns such as AWS keys, GitHub tokens, Slack webhooks, and private keys. A generic plaintext password like `my_password=ramesh123` is **low entropy** and does **not match any default rule**, so Gitleaks reports `no leaks found`.
+
+In the GitHub Action logs you will typically see:
+```
+gitleaks cmd: gitleaks detect --redact -v --exit-code=2 ... --log-opts=-1
+...
+1 commits scanned.
+no leaks found
+```
+
+The scan ran successfully; the secret pattern simply isn’t in the default ruleset.
+
+#### How to verify locally
+
+```bash
+# Scan the latest commit
+gitleaks detect --source . --verbose
+
+# Scan files directly (no git history)
+gitleaks detect --source . --verbose --no-git
+```
+
+If the output still says `no leaks found`, the string does not match any default rule.
+
+#### Solution: Add a custom rule
+
+Create a `.gitleaks.toml` in the repo root to catch generic password assignments:
+
+```toml
+title = "Custom Gitleaks Config"
+
+[[rules]]
+id = "generic-password"
+description = "Detect generic password assignments"
+regex = '''(?i)(password|passwd|pwd)\s*=\s*['"]?[^\s'"]+['"]?'''
+keywords = ["password", "passwd", "pwd"]
+tags = ["key", "generic"]
+```
+
+Then reference it in CI:
+```yaml
+- name: Run Gitleaks
+  uses: gitleaks/gitleaks-action@v2
+  with:
+    config-path: .gitleaks.toml
+```
+
+Or test locally:
+```bash
+gitleaks detect --source . --config .gitleaks.toml --verbose
+```
+
+#### Best practices to avoid this gap
+
+| Approach | When to use |
+|---|---|
+| **Custom `.gitleaks.toml`** | When your codebase contains generic secret patterns (internal passwords, config keys) that are not covered by default rules |
+| **Scan all files (`--no-git`)** | When you want to detect secrets in the current working tree, not just commit diffs |
+| **Pre-commit hook** | Catch secrets before they are committed; use `gitleaks protect --staged` |
+| **Combine with other tools** | Use `detect-secrets`, `trufflehog`, or `gitguardian` alongside Gitleaks for broader coverage |
+
+> **Remember:** Gitleaks is not a generic pattern matcher — it is a high-signal secret detector. If you need to catch low-entropy, organization-specific secrets, extend it with custom rules rather than expecting the defaults to cover everything.
+
+---
+
 ### Summary
 
 | Layer | Setup | When It Runs |
