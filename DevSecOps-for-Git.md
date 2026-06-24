@@ -774,6 +774,174 @@ gitleaks detect --source . --config .gitleaks.toml --verbose
 
 ---
 
+### Troubleshooting: Missing `GITHUB_TOKEN` for Pull Request Scans
+
+When you run `gitleaks/gitleaks-action` on a `pull_request` event, you may see this error and a failing build:
+
+```
+🛑 GITHUB_TOKEN is now required to scan pull requests.
+You can use the automatically created token as shown in the README.
+```
+
+#### Why it happens
+
+`gitleaks-action` needs the `GITHUB_TOKEN` environment variable to call the GitHub API. It uses the token to:
+- Read pull request metadata (base branch, head branch, commit range)
+- Post review comments on the PR when secrets are found
+- Determine which commits belong exclusively to the PR (diff scanning)
+
+Without it, the action cannot distinguish between base-branch history and newly introduced commits, so it aborts.
+
+#### Flow: With vs Without `GITHUB_TOKEN`
+
+**Without `GITHUB_TOKEN`** — the action crashes before scanning:
+
+```
+Pull Request opened on feature → dev
+            │
+            ▼
+┌─────────────────────────┐
+│ GitHub Actions triggers │
+│   gitleaks-action       │
+└─────────────────────────┘
+            │
+            ▼
+┌─────────────────────────┐
+│ Action tries to call    │
+│ GitHub API for PR info  │
+└─────────────────────────┘
+            │
+            ▼
+┌─────────────────────────┐
+│ ❌ No GITHUB_TOKEN      │
+│    available            │
+└─────────────────────────┘
+            │
+            ▼
+🛑 Error: GITHUB_TOKEN is now required to scan pull requests
+   Workflow FAILS immediately (no secrets scanned)
+```
+
+**With `GITHUB_TOKEN`** — the action scans the PR diff and reports findings:
+
+```
+Pull Request opened on feature → dev
+            │
+            ▼
+┌─────────────────────────┐
+│ GitHub Actions triggers │
+│   gitleaks-action       │
+└─────────────────────────┘
+            │
+            ▼
+┌─────────────────────────┐
+│ Authenticated API call  │
+│ using GITHUB_TOKEN      │
+└─────────────────────────┘
+            │
+            ▼
+┌─────────────────────────┐
+│ Gitleaks scans commits  │
+│ unique to the PR        │
+└─────────────────────────┘
+            │
+            ▼
+┌─────────────────────────┐
+│ Findings posted as PR   │
+│ review comments         │
+└─────────────────────────┘
+            │
+            ▼
+   ✅ Secrets detected OR ✅ No leaks found
+```
+
+#### Before (broken)
+
+```yaml
+# .github/workflows/gitleaks.yaml
+name: Gitleaks Scan
+
+on:
+  pull_request:
+  push:
+    branches:
+      - dev
+      - main
+
+jobs:
+  gitleaks:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        # ❌ Missing env: GITHUB_TOKEN
+```
+
+#### After (fixed)
+
+```yaml
+# .github/workflows/gitleaks.yaml
+name: Gitleaks Scan
+
+on:
+  pull_request:
+  push:
+    branches:
+      - dev
+      - main
+
+jobs:
+  gitleaks:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Run Gitleaks
+        uses: gitleaks/gitleaks-action@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # ✅ Required for PR scans
+```
+
+#### Key changes explained
+
+| Change | Before | After | Why |
+|---|---|---|---|
+| Action version | `@v2` | `@v3` | v3 runs on Node 24 (GitHub deprecated Node 20) |
+| Checkout version | `@v4` | `@v6` | Matches v3 runtime requirements |
+| `GITHUB_TOKEN` | Missing | `env: GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}` | Required to query PR metadata and post comments |
+
+> **Note:** `GITHUB_TOKEN` is created automatically by GitHub Actions for every workflow run. You do not need to create it manually — just reference it with `${{ secrets.GITHUB_TOKEN }}`.
+
+#### Minimal reproduction
+
+1. Create a workflow without `GITHUB_TOKEN`:
+   ```yaml
+   - uses: gitleaks/gitleaks-action@v2
+   ```
+
+2. Open a pull request.
+
+3. The `Gitleaks Scan` job fails with:
+   ```
+   🛑 GITHUB_TOKEN is now required to scan pull requests.
+   ```
+
+4. Fix by adding the environment variable and upgrading to v3.
+
+---
+
 ### Summary
 
 | Layer | Setup | When It Runs |
